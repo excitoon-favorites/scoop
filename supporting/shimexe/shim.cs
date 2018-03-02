@@ -1,4 +1,5 @@
 using System;
+using System.ComponentModel;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -6,61 +7,10 @@ using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.Runtime.InteropServices;
 
 namespace Scoop {
 
     class Program {
-        [DllImport("kernel32.dll", SetLastError=true)]
-        static extern bool CreateProcess(string lpApplicationName,
-            string lpCommandLine, IntPtr lpProcessAttributes,
-            IntPtr lpThreadAttributes, bool bInheritHandles,
-            uint dwCreationFlags, IntPtr lpEnvironment, string lpCurrentDirectory,
-            [In] ref STARTUPINFO lpStartupInfo,
-            out PROCESS_INFORMATION lpProcessInformation);
-
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        struct STARTUPINFO {
-            public Int32 cb;
-            public string lpReserved;
-            public string lpDesktop;
-            public string lpTitle;
-            public Int32 dwX;
-            public Int32 dwY;
-            public Int32 dwXSize;
-            public Int32 dwYSize;
-            public Int32 dwXCountChars;
-            public Int32 dwYCountChars;
-            public Int32 dwFillAttribute;
-            public Int32 dwFlags;
-            public Int16 wShowWindow;
-            public Int16 cbReserved2;
-            public IntPtr lpReserved2;
-            public IntPtr hStdInput;
-            public IntPtr hStdOutput;
-            public IntPtr hStdError;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        internal struct PROCESS_INFORMATION {
-            public IntPtr hProcess;
-            public IntPtr hThread;
-            public int dwProcessId;
-            public int dwThreadId;
-        }
-
-        [DllImport("kernel32.dll", SetLastError=true)]
-        static extern UInt32 WaitForSingleObject(IntPtr hHandle, UInt32 dwMilliseconds);
-        const UInt32 INFINITE = 0xFFFFFFFF;
-
-        [DllImport("kernel32.dll", SetLastError=true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        static extern bool CloseHandle(IntPtr hObject);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
-
         static int Main(string[] args) {
             var exe = Assembly.GetExecutingAssembly().Location;
             var dir = Path.GetDirectoryName(exe);
@@ -76,9 +26,6 @@ namespace Scoop {
             var path = Get(config, "path");
             var add_args = Get(config, "args");
 
-            var si = new STARTUPINFO();
-            var pi = new PROCESS_INFORMATION();
-
             // create command line
             var cmd_args = add_args ?? "";
             var pass_args = GetArgs(Environment.CommandLine);
@@ -89,27 +36,48 @@ namespace Scoop {
             if(!string.IsNullOrEmpty(cmd_args)) cmd_args = " " + cmd_args;
             var cmd = "\"" + path + "\"" + cmd_args;
 
-            if(!CreateProcess(null, cmd, IntPtr.Zero, IntPtr.Zero,
-                bInheritHandles: true,
-                dwCreationFlags: 0,
-                lpEnvironment: IntPtr.Zero, // inherit parent
-                lpCurrentDirectory: null, // inherit parent
-                lpStartupInfo: ref si,
-                lpProcessInformation: out pi)) {
-
-                return Marshal.GetLastWin32Error();
+            Process process = new Process();
+            process.StartInfo = new ProcessStartInfo(path, cmd_args);
+            process.StartInfo.CreateNoWindow = true;
+            process.StartInfo.UseShellExecute = false;
+            process.StartInfo.RedirectStandardInput = true;
+            process.StartInfo.RedirectStandardOutput = true;
+            process.StartInfo.RedirectStandardError = true;
+            try {
+                process.Start();
             }
+            catch(Win32Exception exception) {
+                return exception.ErrorCode;
+            }
+            Stream input = Console.OpenStandardInput(0);
+            Task forward_input = new Task(() => { RedirectStream(new StreamReader(input), process.StandardInput); });
+            Task forward_output = new Task(() => { RedirectStream(process.StandardOutput, Console.Out); });
+            Task forward_error = new Task(() => { RedirectStream(process.StandardError, Console.Error); });
+            forward_input.Start();
+            forward_output.Start();
+            forward_error.Start();
+            process.WaitForExit();
+            input.Close();
+            return process.ExitCode;
+        }
 
-            WaitForSingleObject(pi.hProcess, INFINITE);
-
-            uint exit_code = 0;
-            GetExitCodeProcess(pi.hProcess, out exit_code);
-
-            // Close process and thread handles.
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-
-            return (int)exit_code;
+        static void RedirectStream(TextReader from, TextWriter to)
+        {
+            char[] buffer = new char[4096];
+            try {
+                while(true) {
+                    int size = from.Read(buffer, 0, buffer.Length);
+                    if(size <= 0) {
+                        break;
+                    }
+                    to.Write(buffer, 0, size);
+                    to.Flush();
+                }
+            }
+            catch(System.Exception) {
+                // Do nothing.
+            }
+            to.Close();
         }
 
         // now uses GetArgs instead

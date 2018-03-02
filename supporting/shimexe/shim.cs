@@ -6,7 +6,6 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 
 namespace Scoop {
 
@@ -38,46 +37,15 @@ namespace Scoop {
 
             Process process = new Process();
             process.StartInfo = new ProcessStartInfo(path, cmd_args);
-            process.StartInfo.CreateNoWindow = true;
             process.StartInfo.UseShellExecute = false;
-            process.StartInfo.RedirectStandardInput = true;
-            process.StartInfo.RedirectStandardOutput = true;
-            process.StartInfo.RedirectStandardError = true;
             try {
                 process.Start();
             }
             catch(Win32Exception exception) {
                 return exception.ErrorCode;
             }
-            Stream input = Console.OpenStandardInput(0);
-            Task forward_input = new Task(() => { RedirectStream(new StreamReader(input), process.StandardInput); });
-            Task forward_output = new Task(() => { RedirectStream(process.StandardOutput, Console.Out); });
-            Task forward_error = new Task(() => { RedirectStream(process.StandardError, Console.Error); });
-            forward_input.Start();
-            forward_output.Start();
-            forward_error.Start();
             process.WaitForExit();
-            input.Close();
             return process.ExitCode;
-        }
-
-        static void RedirectStream(TextReader from, TextWriter to)
-        {
-            char[] buffer = new char[4096];
-            try {
-                while(true) {
-                    int size = from.Read(buffer, 0, buffer.Length);
-                    if(size <= 0) {
-                        break;
-                    }
-                    to.Write(buffer, 0, size);
-                    to.Flush();
-                }
-            }
-            catch(System.Exception) {
-                // Do nothing.
-            }
-            to.Close();
         }
 
         // now uses GetArgs instead
